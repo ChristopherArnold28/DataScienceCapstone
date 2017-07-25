@@ -1,0 +1,238 @@
+---
+title: "Exploratory Capstone Analysis"
+author: "Christopher Arnold"
+date: "July 18, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+## Store filenames and paths as varriables
+twitterFile <- c("~/Data Science Capstone/en_US.twitter.txt")
+blogFile <- c("~/Data Science Capstone/en_US.blogs.txt")
+newsFile <- c("~/Data Science Capstone/en_US.news.txt")
+set.seed(1234)
+
+require(tm)
+require(stringi)
+require(slam)
+require(quanteda)
+require(RWeka)
+require(tau)
+require(openNLP)
+require(ggplot2)
+require(filehash)
+require(scales)
+require(knitr)
+```
+
+## Introduction
+
+In this capstone project we are tasked with exploring the methods behind smart text prediction. To build the data set to use in the model we will sample from blog posts, twitter tweets, and news articles. We will then subsequently clean the data to remove unwanted aspects of common english text to make the text a clean data type. Through this process we will perform some exploratory data analysis to see what word grams are appearing most frequently and what patterns we can expect over the course of this process from data acquisition to model building.
+
+
+##Loading data and Exploration
+
+We need to first load the data and do some basic exploration as to size and length of each line, for sanity and just to prepare for memory allocation that each file should see. From these memory sizes we can determine if we can load this file each time in the future application or to save a training set and just read from that already computed file each time. Because the files are large we will use samples of these files. In this scenario I am using just 5% of the total data set of each of the blogs, twitter and news.
+
+```{r loading data twitter}
+#open connection to twitter file
+twitter.connection <- file(twitterFile, open = "rb")
+#read all the lines and return each line as a vector of characters
+twitter.tweets <- readLines(twitter.connection, encoding = "UTF-8", skipNul = TRUE)
+twitter.words <- stri_count_words(twitter.tweets)
+twitter.wordcount <- sum(twitter.words)
+twitter.meanwords <- mean(twitter.words) 
+#want to get number of tweets
+twitter.tweets.num <- length(twitter.tweets)
+twitter.sample <- sample(twitter.tweets, size = twitter.tweets.num * .05, replace = FALSE)
+twitter.sample.words <- stri_count_words(twitter.sample)
+close(twitter.connection)
+```
+
+```{r loading data blogs}
+blog.connection <- file(blogFile, open ="rb")
+blog.bloglines <- readLines(blog.connection, encoding = "UTF-8", skipNul = TRUE)
+blog.words <- stri_count_words(blog.bloglines)
+blog.wordcount <- sum(blog.words)
+blog.meanwords <- mean(blog.words)
+blog.bloglines.num <- length(blog.bloglines)
+blog.sample <- sample(blog.bloglines, size = blog.bloglines.num * .05, replace = FALSE)
+blog.sample.words <- stri_count_words(blog.sample)
+close(blog.connection)
+
+```
+
+```{r loading data news}
+news.connection <- file(newsFile, open = "rb")
+news.lines <- readLines(news.connection, encoding = "UTF-8", skipNul = TRUE)
+news.words <- stri_count_words(news.lines)
+news.wordcount <- sum(news.words)
+news.meanwords <- mean(news.words)
+news.lines.num <- length(news.lines)
+news.sample <- sample(news.lines, size = news.lines.num * .05, replace = FALSE)
+news.sample.words <- stri_count_words(news.sample)
+close(news.connection)
+```
+
+
+```{r display stats, echo = FALSE}
+#histograms of word counts
+par(mfrow = c(1,3))
+hist(twitter.sample.words, col = "blue")
+hist(blog.sample.words, col = "green")
+hist(news.sample.words, col = "red")
+
+```
+
+From our overview histograms we see that the twitter samples vary in number of words per observation up to roughly 32 words, where as the blogs and the news sites vary up to 200+ words. In the following table we see this information more clearly.
+
+```{r summary table}
+
+source <- c("Twitter", "Blogs", "News")
+linecount <- c(twitter.tweets.num, blog.bloglines.num, news.lines.num)
+wordcounts <- c(twitter.wordcount, blog.wordcount, news.wordcount)
+meanwords <- c(twitter.meanwords, blog.meanwords, news.meanwords)
+sumframe <- data.frame(source, linecount, wordcounts, meanwords)
+colnames(sumframe) <- c("Source", "Number of Lines", "Number of Words", "Mean Words Per Line")
+
+kable(sumframe)
+
+```
+
+From this we see that twitter posts have the mosts lines but the least amount of words per line and we can probably expect them to have the most troublesome characters. This will cause us to focus on removal of symbols, numbers, single letter non words. 
+
+
+## Building our Training Set
+
+To build our training set we will first build our corpus of clean data. To obtain this clean data, the words in the corpus must go through a series of cleaning operations and word removal operations. These incldue:
+
+* Turning Decimals to spaces
+* Removing Hashtags
+* Removing punctuation
+* Removing nonenglish words
+* Turning all words to lower space
+* Removing stop words
+* Remove unwanted characters
+* Remove profanity
+
+From our completed corpus that is a collection of all three data sets: blogs, twitter posts, and news; we will then create n-grams of our data. An n-gram is an n-length subset of words that will become the key to our model. We can use these grams of words to see what words are most common to following another. 
+
+```{r build corpus}
+combinedData <- c(twitter.sample, blog.sample, news.sample)
+
+corpus <- VCorpus(VectorSource(combinedData))
+#corpus <- tm::Corpus(VectorSource(combinedData))
+
+decimal.clean <- function(x) {gsub("([0-9]*)\\.([0-9]+)","\\1 \\2", x)}
+hashtag.clean <- function(x) {gsub("#[a-zA-z0-9]+", " ", x)}
+nonenglish.clean <- function(x) {gsub("\\W+", " ", x)}
+
+corpus <- tm_map(corpus, decimal.clean)
+corpus <- tm_map(corpus, hashtag.clean)
+corpus <- tm_map(corpus, nonenglish.clean)
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, stripWhitespace)
+corpus <- tm_map(corpus, tolower)
+corpus2 <- corpus
+corpus <- tm_map(corpus, removeWords, stopwords("english"))
+weirdsletters <- c("b", "c", "d", "e", "f", "g", "h", "j", "k", "l", "m", "n", "p", "q", "r", "s", "t", "u", "v","w", "x", "y", "z", "www", "rt", "ll", "re", "ve", "ll", "th", "st", "pm", "lol")
+corpus <- tm_map(corpus, removeWords, weirdsletters)
+corpus2 <- tm_map(corpus2, removeWords, weirdsletters)
+swearWords <- read.csv("~/Data Science Capstone/SwearWords.csv")
+corpus <- tm_map(corpus, removeWords, swearWords)
+corpus2 <- tm_map(corpus2, removeWords, swearWords)
+
+corpus <- tm_map(corpus, PlainTextDocument)
+corpus2 <- tm_map(corpus2, PlainTextDocument)
+```
+
+We will first build the n-gram files for a unigram (just one word), a bigram, trigram, and quad gram. This way the model will be able to first predict on three consecutive words, then two consecutive words, then a single word. 
+
+```{r building n-grams}
+NGramTokenizer1 <- function(x) unlist(lapply(NLP::ngrams(words(x), 1), paste,        collapse=" "), use.names=FALSE)
+
+NGramTokenizer2 <- function(x) unlist(lapply(NLP::ngrams(words(x), 2), paste,        collapse=" "), use.names=FALSE)
+
+NGramTokenizer3 <- function(x) unlist(lapply(NLP::ngrams(words(x), 3), paste,        collapse=" "), use.names=FALSE)
+
+NGramTokenizer4 <- function(x) unlist(lapply(NLP::ngrams(words(x), 4), paste,        collapse=" "), use.names=FALSE)
+
+ng1 <- TermDocumentMatrix(corpus, control=list(tokenize=NGramTokenizer1))
+ng2 <- TermDocumentMatrix(corpus, control=list(tokenize=NGramTokenizer2))
+ng3 <- TermDocumentMatrix(corpus, control=list(tokenize=NGramTokenizer3))
+ng4 <- TermDocumentMatrix(corpus, control=list(tokenize=NGramTokenizer4))
+
+ng1sw <- TermDocumentMatrix(corpus2, control = list(tokenize = NGramTokenizer1))
+ng2sw <- TermDocumentMatrix(corpus2, control = list(tokenize = NGramTokenizer2))
+ng3sw <- TermDocumentMatrix(corpus2, control = list(tokenize = NGramTokenizer3))
+ng4sw <- TermDocumentMatrix(corpus2, control = list(tokenize = NGramTokenizer4))
+```
+
+```{r}
+
+w1 <- findFreqTerms(ng1, lowfreq = 250)
+wf1 <- rowSums(as.matrix(ng1[w1,]))
+wordGram1 <- data.frame(unigram = names(wf1), frequency = wf1, row.names = NULL)
+save(wordGram1,file =  "WordGram1.RData")
+
+w2 <- findFreqTerms(ng2, lowfreq = 100)
+wf2 <- rowSums(as.matrix(ng2[w2,]))
+wordGram2 <- data.frame(bigram = names(wf2), frequency = wf2, row.names= NULL)
+save(wordGram2,file =  "WordGram2.RData")
+
+w3 <- findFreqTerms(ng3, lowfreq = 10)
+wf3 <- rowSums(as.matrix(ng3[w3,]))
+wordGram3 <- data.frame(trigram = names(wf3), frequency = wf3, row.names = NULL)
+save(wordGram3,file =  "WordGram3.RData")
+
+w4 <- findFreqTerms(ng4, lowfreq = 10)
+wf4 <- rowSums(as.matrix(ng4[w4,]))
+wordGram4 <- data.frame(quadgram = names(wf4), frequency = wf4, row.names = NULL)
+save(wordGram4, file = "WordGram4.RData")
+
+w1s <- findFreqTerms(ng1sw, lowfreq = 500)
+wf1s <- rowSums(as.matrix(ng1sw[w1s,]))
+wordGram1s <- data.frame(unigram = names(wf1s), frequency = wf1s, row.names = NULL)
+save(wordGram1s,file =  "WordGram1sw.RData")
+
+w2s <- findFreqTerms(ng2sw, lowfreq = 250)
+wf2s <- rowSums(as.matrix(ng2sw[w2s,]))
+wordGram2s <- data.frame(bigram = names(wf2s), frequency = wf2s, row.names= NULL)
+save(wordGram2s,file =  "WordGram2sw.RData")
+
+w3s <- findFreqTerms(ng3sw, lowfreq = 100)
+wf3s <- rowSums(as.matrix(ng3sw[w3s,]))
+wordGram3s <- data.frame(trigram = names(wf3s), frequency = wf3s, row.names = NULL)
+save(wordGram3s,file =  "WordGram3sw.RData")
+
+w4s <- findFreqTerms(ng4sw, lowfreq = 25)
+wf4s <- rowSums(as.matrix(ng4sw[w4s,]))
+wordGram4s <- data.frame(quadgram = names(wf4s), frequency = wf4s, row.names = NULL)
+save(wordGram4s, file = "WordGram4sw.RData")
+
+```
+
+It would be interesting to visualize some of these n-grams. We will look at the most popular bi-grams just to ensure that our most popular cases are not strange occurances of words and make sense to be the most popular.
+
+Some notes about stop words. I have created two sets of n gram term matrices. One set contains stop words and one does not. I have done this because stop words are troublesome when working with the low level NGrams like one or two words, but are increasingly important when you attempt to identify phrases and give suggestions on completing phrases. My model will mesh the two together and give a choice to the user that has predictions based on a corpus of stop words and without stop words. This will predict more common english phrases in addition to retaining the integrity and diverse frequency matrix a stop word removed corpus creates.
+
+```{r n-gram plots}
+
+ggplot(wordGram2[1:15,], aes(x=reorder(bigram, frequency), y=frequency)) +
+    geom_bar(stat = "identity", position = "dodge", fill = "blue") + 
+    coord_flip() +
+    xlab("Bi-gram words") + ylab("Sample Frequency") +
+    ggtitle('Most Common Bi-grams')
+
+ggplot(wordGram2s[1:15,], aes(x=reorder(bigram, frequency), y=frequency)) +
+    geom_bar(stat = "identity", position = "dodge", fill = "blue") + 
+    coord_flip() +
+    xlab("Bi-gram words") + ylab("Sample Frequency") +
+    ggtitle('Most Common Bi-grams With Stop Words')
+
+```
+
+The issue with these word prediction models is retaining as much of the training data as possible while still operating at a servicable efficiency. For example, do the memory allocation of the 5 and 6 word patterns, the training data only holds the frequency and words for those that have frequencies above 5 occurances. If we are looking for a recommendation on a phrase that occurred less than 5 times in our training data the model will not have a perfect solution.
+
